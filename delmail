@@ -1,0 +1,219 @@
+#!/usr/bin/perl 
+
+# DelMail  
+# Version 0.2a
+
+(@ARGV[0] and  @ARGV[1]) or  die "Uso: delmail user pass [servidor]\n";
+
+$user = @ARGV[0];   # Argumentos user y pass (en ese orden!)
+$pass = @ARGV[1];
+$serv_opt = @ARGV[2];
+$file = ".delmail";
+$nl = 0; # permite buscar mas alla de la cabecera del mail
+
+# El servidor puede tomarlo del:
+# 	argumento
+# 	file:.delmail
+# 	stdin
+
+if (@ARGV[2])
+{
+    $servidor = @ARGV[2];
+}
+else
+{    
+
+    if (-e "$ENV{\"HOME\"}/$file")
+    {
+	open(fd, "$ENV{\"HOME\"}/$file");
+		die "Ups!" unless fd;
+	$servidor = <fd>;
+	chop($servidor);	
+    }
+    else
+    {
+	# si no, hay que escribirlo.
+	print "Servidor de correo: ";
+	$servidor = <STDIN>;
+	chop($servidor);
+    }
+}
+
+use Net::POP3;
+inicio();
+
+while ($comando !~ /^q/)
+{
+	print "delmail> ";
+	$comando = <STDIN>;	
+
+		# comando top de telnet
+		if ($comando=~/^t *(\d+) *(\d+)/)
+		{
+			$top = $pop->top($1,$2); 
+			print @$top;
+		}
+		# reconectarse, vuelve a mandar el login
+		if ($comando=~/^r/)
+		{
+			$pop->quit();
+			inicio();
+		}
+		# mostrar o borrar todo
+		if ($comando=~/^([mb]) *\*/)
+		{
+			for(my $i=1;$i<=$num;$i++)
+				{
+					($1 eq "m") and resumen($i);
+					($1 eq "b") and borrar($i);
+				}
+		}
+		# x nro
+		if ($comando=~/^([mb]) *(\d+)/)
+		{
+			($1 eq "m") and resumen($2);
+			($1 eq "b") and borrar($2);
+		}
+		
+		# x string
+		if ($comando=~/^([mb]) *"(.+)"/)
+		{
+			for(my $i=1;$i<=$num;$i++) #busca en cada mail
+			{
+				$cabecera = $pop->top($i, $nl); #referencia a un ARRAY
+				($1 eq "m") and (grep /$2/i, @$cabecera) and resumen($i);	
+				($1 eq "b") and	(grep /$2/i, @$cabecera) and borrar($i);
+			}
+
+		}
+		#x fecha          $1             $2	$3     $4
+		if ($comando=~/^([mb]) *hasta *(\d+)\/(\d+)\/?(\d*)/)
+		{
+			($4)    # el año puede omitirse
+				and $seg = `date -d "$3/$2/$4 23:59:00" +%s` 
+				or $seg = `date -d "$3/$2 23:59:00" +%s`;  
+
+			for(my $i=1;$i<=$num;$i++) 
+		        {	
+				$cabecera = $pop->top($i); #chupo el mail
+			 	@ddm =  grep s/^Date://i, @$cabecera ; 
+				$ddm = join "", @ddm; 
+				$segm = `date -d "$ddm" +%s`; # fecha en segundos del mail
+				($seg >= $segm) and ($1 eq "m") and resumen($i); 
+				($seg >= $segm) and ($1 eq "b") and borrar($i);
+		         }
+		}
+		
+		#x tamaño
+		if ($comando=~/^([mb]) *> *(\d+)(\w*)/)
+		{
+			$nspq= $2;$sssp= $1;$mul = 1; 
+			$3=~/k/i and $mul = 1024;
+			$3=~/m/i and $mul = 1048576;
+		        $tama = $mul * $nspq; 	
+			for(my $i=1;$i<=$num;$i++) #busca en cada mail
+			{
+				($sssp eq "m") and (@$mensajes{$i} >= $tama) and resumen($i) ;
+				($sssp eq "b") and (@$mensajes{$i} >= $tama) and borrar($i) ;
+			}
+		}
+		#mas de 1 y menos de todo
+		if ($comando=~/^([mb]) *del *(\d+) *al *(\d+)/)
+		{
+			for(my $i=$2;$i<=$3;$i++) #busca en cada mail
+			{
+        			($1 eq "m") and resumen($i);
+				($1 eq "b") and borrar($i);
+			}
+		}
+		# Ups ...
+		if ($comando=~/^panic/)
+		{	
+			print "Better luck next time\n";
+			exit 0;
+		}
+
+		if ($comando=~/^h/)
+		{
+			print "\t m n  Muestra Resumen del mail n\n";
+			print "\t m *  Muestra resumen de todos los mails\n";
+			print "\t m \"outlook\"  muestra todos los mails que contienen\n\t   en su cabecera el string.\n";
+			print "\t m \"juan|pepe\" busca los mails que contienen juan o \n\t   pepe en su cabecera.\n";
+			print "\t m > 2k Muestra mensajes mayores a 2k. Tambien puede \n\t   usarse el sufijo M (mega)\n";
+			print "\t m del 1 al 23 Muestra por rango.\n"; 
+			print "\t m hasta dd/mm/yy Muestra todo hasta el dd del mm inclusive.\n\t   Si se omite yy se asume que es el año actual. \n"; 
+			print "\t b  borra mensajes, tiene la misma sintaxis que m. O dicho\n\t   de otra forma, todo lo que m muestra, b puede borrarlo.\n";
+			print "\t t 1 10  muestra lo mismo que un top 1 1\n";
+			print "\t r  vuelve a hacer el login\n";
+			print "\t panic  Por si borraste algo que no debias ...\n";
+			print "\t h  muestra breve ayuda\n";
+			print "\t q  para salir\n";
+		}	
+}
+
+salir();
+
+########
+# 
+#  SUB´s
+#
+
+
+# Borra el mail xxx
+sub borrar 
+{
+	$pop->delete(@_) and print "Mensaje @_ eliminado\n";
+}
+# Imprime una linea con los datos del mail xxx
+sub resumen
+{
+	$cabecera = $pop->top(@_) or return; 	
+	#$cabecera tiene una referencia a un array de lineas de texto 
+        $size = @$mensajes{@_}; # tamaño del mail
+	foreach $linea (@{$cabecera}) 
+	{
+	         if ($linea=~/^From:/) {$from = $linea; $from =~ s/^From://};
+	         if ($linea=~/^Date:/) {$fecha = $linea; $fecha =~ s/^Date://};
+	         if ($linea=~/^Subject:/) {$asunto = $linea; $asunto =~ s/^Subject://};
+	}
+	chop($fecha) ; chop($from) ; chop($asunto);
+	print "\n@_)\n$fecha\n$from\n$asunto\n $size\n";
+}
+
+sub inicio
+{
+
+	# Conecta al servidor
+	$pop = Net::POP3->new($servidor);
+		die "No encontré el servidor $servidor\n" unless $pop;
+
+	print("Conectado a $servidor\n");
+
+	# Número de mensajes
+	$num = $pop->login($user, $pass);
+	if ($num)
+	{
+		 if ($num == "0E0")
+		 {
+			print("No hay mensajes\n");
+			salir();	
+		 }
+		 else
+		 {
+			print ("Hay $num mensaje(s)\n");
+			$mensajes or $mensajes = $pop->list();
+	 	 }
+	}
+	else
+	{
+		print "Error ¿de contraseña?\n";
+		salir();
+	}
+}
+
+sub salir
+{
+	$pop->quit() and print "Desconectado de $servidor \n";
+	exit 0;
+}
+
